@@ -1,0 +1,15 @@
+run_name: "stage3_temporal_v1"
+seed: 42
+output_dir: "checkpoints/stage3"
+
+train_sequences: "data/processed/train_sequences.json"
+val_sequences: "data/processed/val_sequences.json"
+
+num_epochs: 20
+batch_size: 8
+num_workers: 4
+lr: 1.0e-4
+weight_decay: 0.01
+max_grad_norm: 1.0
+use_wandb: false
+log_every: 10

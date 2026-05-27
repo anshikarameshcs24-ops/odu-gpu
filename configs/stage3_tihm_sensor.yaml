@@ -1,0 +1,19 @@
+run_name: "stage3_tihm_sensor_v1"
+seed: 42
+output_dir: "checkpoints/stage3_tihm_sensor"
+
+train_sequences: "data/processed/tihm/train_sequences.json"
+val_sequences: "data/processed/tihm/val_sequences.json"
+
+num_epochs: 20
+batch_size: 16
+num_workers: 4
+lr: 1.0e-4
+weight_decay: 0.01
+max_grad_norm: 1.0
+hidden_dim: 256
+projection_dim: 256
+dropout: 0.2
+use_wandb: false
+log_every: 10
+

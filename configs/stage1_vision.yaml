@@ -1,0 +1,20 @@
+run_name: "stage1_vision_v1"
+seed: 42
+modality: "vision"
+
+vision_ckpt: "MCG-NJU/videomae-base-finetuned-kinetics"
+audio_ckpt: "facebook/wav2vec2-large-robust"
+output_dir: "checkpoints/stage1_vision"
+
+train_csv: "data/annotations/train.csv"
+val_csv: "data/annotations/val.csv"
+manifest_csv: "data/processed/chunks_manifest.csv"
+
+num_epochs: 10
+batch_size: 4
+num_workers: 4
+lr: 2.0e-5
+weight_decay: 0.01
+max_grad_norm: 1.0
+log_every: 10
+use_wandb: false

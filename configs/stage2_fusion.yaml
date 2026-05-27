@@ -1,0 +1,23 @@
+run_name: "stage2_fusion_v1"
+seed: 42
+
+vision_ckpt: "MCG-NJU/videomae-base-finetuned-kinetics"
+audio_ckpt: "facebook/wav2vec2-large-robust"
+output_dir: "checkpoints/stage2"
+
+train_csv: "data/annotations/train.csv"
+val_csv: "data/annotations/val.csv"
+manifest_csv: "data/processed/chunks_manifest.csv"
+
+num_epochs: 30
+batch_size: 2
+num_workers: 8
+backbone_lr: 2.0e-5
+head_lr: 1.0e-4
+weight_decay: 0.01
+max_grad_norm: 1.0
+unfreeze_epoch: 3
+accumulation_steps: 4
+enable_gradient_checkpointing: true
+use_wandb: false
+log_every: 10
