@@ -14,16 +14,24 @@ class CMAIVisionEncoder(nn.Module):
         embed_dim: int = 512,
         freeze_layers: int = 8,
         gradient_checkpointing: bool = False,
+        num_patch_tokens: int = 8,
     ):
         super().__init__()
         self.backbone = VideoMAEModel.from_pretrained(pretrained)
         self.hidden_size = self.backbone.config.hidden_size
+        self.num_patch_tokens = num_patch_tokens
 
         if gradient_checkpointing:
             self.backbone.gradient_checkpointing_enable()
 
         self._freeze_layers(freeze_layers)
         self.projector = nn.Sequential(
+            nn.LayerNorm(self.hidden_size),
+            nn.Linear(self.hidden_size, embed_dim),
+            nn.GELU(),
+            nn.Dropout(0.1),
+        )
+        self.token_projector = nn.Sequential(
             nn.LayerNorm(self.hidden_size),
             nn.Linear(self.hidden_size, embed_dim),
             nn.GELU(),
@@ -40,8 +48,11 @@ class CMAIVisionEncoder(nn.Module):
         for param in self.backbone.parameters():
             param.requires_grad = True
 
-    def forward(self, pixel_values: torch.Tensor) -> torch.Tensor:
+    def forward(self, pixel_values: torch.Tensor) -> tuple[torch.Tensor, torch.Tensor]:
         outputs = self.backbone(pixel_values=pixel_values)
         cls_token = outputs.last_hidden_state[:, 0, :]
-        return self.projector(cls_token)
-
+        patch_tokens = outputs.last_hidden_state[:, 1 : 1 + self.num_patch_tokens, :]
+        global_embedding = self.projector(cls_token)
+        token_embeddings = self.token_projector(patch_tokens)
+        vision_tokens = torch.cat([global_embedding.unsqueeze(1), token_embeddings], dim=1)
+        return global_embedding, vision_tokens

@@ -54,6 +54,9 @@ def _build_model(config: dict, device: torch.device) -> torch.nn.Module:
         vision_ckpt=config["vision_ckpt"],
         audio_ckpt=config["audio_ckpt"],
         enable_gradient_checkpointing=bool(config.get("enable_gradient_checkpointing", False)),
+        modality_dropout_prob=float(config.get("modality_dropout_prob", 0.0)),
+        num_patch_tokens=int(config.get("num_patch_tokens", 8)),
+        num_audio_tokens=int(config.get("num_audio_tokens", 8)),
     ).to(device)
     if torch.cuda.device_count() > 1 and device.type == "cuda":
         model = torch.nn.DataParallel(model)
@@ -124,19 +127,27 @@ def train(config: dict) -> None:
     model = _build_model(config, device)
     criterion = CombinedCMAILoss(risk_class_weights=_compute_risk_weights(train_df, device))
 
-    backbone_params = []
+    vision_backbone_params = []
+    audio_backbone_params = []
+    fusion_params = []
     head_params = []
     for name, parameter in model.named_parameters():
         if not parameter.requires_grad:
             continue
-        if "backbone" in name:
-            backbone_params.append(parameter)
+        if "vision_enc.backbone" in name:
+            vision_backbone_params.append(parameter)
+        elif "audio_enc.backbone" in name:
+            audio_backbone_params.append(parameter)
+        elif "fusion" in name:
+            fusion_params.append(parameter)
         else:
             head_params.append(parameter)
 
     optimizer = AdamW(
         [
-            {"params": backbone_params, "lr": float(config["backbone_lr"])},
+            {"params": vision_backbone_params, "lr": float(config["vision_backbone_lr"])},
+            {"params": audio_backbone_params, "lr": float(config["audio_backbone_lr"])},
+            {"params": fusion_params, "lr": float(config["fusion_lr"])},
             {"params": head_params, "lr": float(config["head_lr"])},
         ],
         weight_decay=float(config["weight_decay"]),
@@ -190,8 +201,10 @@ def train(config: dict) -> None:
                         "train/loss": loss.item() * accumulation_steps,
                         "train/loss_cmai": cmai_loss.item(),
                         "train/loss_risk": risk_loss.item(),
-                        "train/lr_backbone": optimizer.param_groups[0]["lr"],
-                        "train/lr_head": optimizer.param_groups[1]["lr"],
+                        "train/lr_vision_backbone": optimizer.param_groups[0]["lr"],
+                        "train/lr_audio_backbone": optimizer.param_groups[1]["lr"],
+                        "train/lr_fusion": optimizer.param_groups[2]["lr"],
+                        "train/lr_head": optimizer.param_groups[3]["lr"],
                         "epoch": epoch,
                     }
                 )
@@ -215,4 +228,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

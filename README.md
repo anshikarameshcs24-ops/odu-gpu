@@ -51,6 +51,11 @@ The default Stage 2 config in this scaffold is tuned for a 24 GB GPU with gradie
 - `batch_size: 2`
 - `accumulation_steps: 4`
 - `enable_gradient_checkpointing: true`
+- `vision_backbone_lr: 2e-5`
+- `audio_backbone_lr: 5e-6`
+- `modality_dropout_prob: 0.15`
+- `num_patch_tokens: 8`
+- `num_audio_tokens: 8`
 
 6. Extract frozen embeddings for temporal training:
 
@@ -84,6 +89,8 @@ Train the TIHM sensor temporal branch:
 python -m src.training.trainer_stage3_tihm --config configs/stage3_tihm_sensor.yaml
 ```
 
+The TIHM branch is intentionally separate from the CMAI video+audio model. It trains its own risk and trajectory heads from sensor sequences rather than being forced into joint multimodal training with partially missing modalities.
+
 ## Using DAVE
 
 Build a DAVE manifest for encoder evaluation or audio-video warm-up:
@@ -100,5 +107,6 @@ Important: the DAVE dataset card states it is a diagnostic benchmark where both 
 
 - The training scripts expect real CMAI annotations and processed chunk manifests.
 - TIHM and DAVE do not provide native 29-class CMAI labels, so they are integrated as auxiliary data sources rather than dropped directly into the CMAI classifier.
+- Stage 2 fusion now uses a small token set from each modality rather than single-vector cross-attention: the projected VideoMAE CLS token plus 8 patch tokens, and the projected Wav2Vec2 pooled embedding plus 8 temporally pooled audio tokens.
 - W&B and Hugging Face are optional at runtime; the code degrades gracefully if they are not configured.
 - The current scaffold is single-node and supports single GPU or `torch.nn.DataParallel`. You can extend it to FSDP/DeepSpeed using the provided config stubs.
