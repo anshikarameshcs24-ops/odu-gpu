@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import time
 from pathlib import Path
 from typing import Any
 
@@ -81,8 +82,7 @@ def _build_sampler(records: list[dict[str, Any]], minority_target_fraction: floa
 
 def _pack_split(records: list[dict[str, Any]], pack_path: Path) -> None:
     pack_path.parent.mkdir(parents=True, exist_ok=True)
-    if pack_path.exists():
-        return
+    start_time = time.perf_counter()
     features = []
     elevated = []
     trajectory = []
@@ -98,15 +98,52 @@ def _pack_split(records: list[dict[str, Any]], pack_path: Path) -> None:
         elevated=np.stack(elevated),
         trajectory=np.asarray(trajectory, dtype=np.int64),
     )
+    elapsed = time.perf_counter() - start_time
+    size_mb = pack_path.stat().st_size / (1024 * 1024)
+    print(f"[pack] Wrote {pack_path.name} ({size_mb:.1f} MB) in {elapsed:.1f}s", flush=True)
+
+
+def _warn_if_pack_stale(pack_path: Path, records: list[dict[str, Any]]) -> None:
+    source_dirs = {
+        Path(record["feature_path"]).parent
+        for record in records
+        if record.get("feature_path")
+    }
+    newest_source_mtime = 0.0
+    for source_dir in source_dirs:
+        if source_dir.exists():
+            newest_source_mtime = max(newest_source_mtime, source_dir.stat().st_mtime)
+
+    if newest_source_mtime and pack_path.stat().st_mtime < newest_source_mtime:
+        print(
+            f"[pack] Warning: {pack_path.name} is older than source sequence directory; "
+            "rebuild it if source arrays changed.",
+            flush=True,
+        )
 
 
 def _make_dataset(records: list[dict[str, Any]], split_name: str, config: dict):
     if bool(config.get("pack_dataset_arrays", True)):
         pack_dir = Path(config.get("packed_arrays_dir", "data/processed/tihm_binary/packed"))
         pack_path = pack_dir / f"{split_name}.npz"
-        _pack_split(records, pack_path)
+        if pack_path.exists() and pack_path.stat().st_size > 0:
+            size_mb = pack_path.stat().st_size / (1024 * 1024)
+            print(f"[pack] Found existing {pack_path.name} ({size_mb:.1f} MB), skipping repack.", flush=True)
+            _warn_if_pack_stale(pack_path, records)
+        else:
+            _pack_split(records, pack_path)
         return TIHMBinaryPackedSequenceDataset(records, pack_path)
     return TIHMBinarySequenceDataset(records, cache_in_memory=bool(config.get("cache_dataset_in_memory", False)))
+
+
+def _packed_cache_ready(config: dict) -> bool:
+    if not bool(config.get("pack_dataset_arrays", True)):
+        return False
+    pack_dir = Path(config.get("packed_arrays_dir", "data/processed/tihm_binary/packed"))
+    return all(
+        (pack_dir / f"{split}.npz").exists() and (pack_dir / f"{split}.npz").stat().st_size > 0
+        for split in ("train", "val", "test")
+    )
 
 
 @torch.no_grad()
@@ -251,6 +288,12 @@ def train_stage4(config: dict) -> None:
     val_records = _load_records(config["val_sequences"])
     test_records = _load_records(config["test_sequences"])
     events = _load_records(config["events_json"])
+    print(
+        f"[data] train={len(train_records)} windows | val={len(val_records)} | "
+        f"test={len(test_records)} | packed={'yes' if _packed_cache_ready(config) else 'no'} | "
+        f"workers={int(config['num_workers'])}",
+        flush=True,
+    )
 
     feature_dim = int(train_records[0]["feature_dim"])
     binary_counts = _binary_counts(train_records)
