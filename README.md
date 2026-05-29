@@ -1,10 +1,11 @@
 # CMAI Multimodal AI System
 
-GPU training scaffold for Cohen-Mansfield Agitation Inventory (CMAI) behaviour detection from video and audio. The project is structured around three stages:
+GPU training scaffold for Cohen-Mansfield Agitation Inventory (CMAI) behaviour detection from video and audio. The project is structured around four stages:
 
 1. Stage 1: modality-specific encoder adaptation
 2. Stage 2: multimodal fusion fine-tuning
 3. Stage 3: temporal agitation trajectory modelling
+4. Stage 4: TIHM binary early-warning modelling
 
 ## Layout
 
@@ -91,6 +92,22 @@ python -m src.training.trainer_stage3_tihm --config configs/stage3_tihm_sensor.y
 
 The TIHM branch is intentionally separate from the CMAI video+audio model. It trains its own risk and trajectory heads from sensor sequences rather than being forced into joint multimodal training with partially missing modalities.
 
+Prepare the binary low-vs-elevated TIHM early-warning dataset:
+
+```bash
+python scripts/prepare_tihm_binary_dataset.py \
+  --input_dir data/external/tihm/Dataset \
+  --output_dir data/processed/tihm_binary
+```
+
+Train the TIHM binary early-warning model:
+
+```bash
+python -m src.training.trainer_stage4_tihm_binary --config configs/stage4_tihm_binary_elevated.yaml
+```
+
+This stage labels the minutes leading into agitation events as `elevated` and trains a binary temporal detector plus the trajectory head for risk grading.
+
 ## Using DAVE
 
 Build a DAVE manifest for encoder evaluation or audio-video warm-up:
@@ -108,5 +125,6 @@ Important: the DAVE dataset card states it is a diagnostic benchmark where both 
 - The training scripts expect real CMAI annotations and processed chunk manifests.
 - TIHM and DAVE do not provide native 29-class CMAI labels, so they are integrated as auxiliary data sources rather than dropped directly into the CMAI classifier.
 - Stage 2 fusion now uses a small token set from each modality rather than single-vector cross-attention: the projected VideoMAE CLS token plus 8 patch tokens, and the projected Wav2Vec2 pooled embedding plus 8 temporally pooled audio tokens.
+- Stage 4 uses packed TIHM sequence arrays when enabled, which keeps training fast on repeated runs.
 - W&B and Hugging Face are optional at runtime; the code degrades gracefully if they are not configured.
 - The current scaffold is single-node and supports single GPU or `torch.nn.DataParallel`. You can extend it to FSDP/DeepSpeed using the provided config stubs.

@@ -22,6 +22,8 @@ def main() -> None:
         output_dir=args.output_dir,
         sequence_length=args.sequence_length,
         stride=args.stride,
+        pre_agitation_minutes=args.pre_agitation_minutes,
+        imminent_minutes=args.imminent_minutes,
     )
     save_sequence_splits(records, args.output_dir)
     print(f"Saved TIHM sequence splits to {args.output_dir}")
@@ -29,4 +31,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

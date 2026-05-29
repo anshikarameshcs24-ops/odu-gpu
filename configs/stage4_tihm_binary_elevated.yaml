@@ -1,0 +1,26 @@
+run_name: "stage4_tihm_binary_elevated"
+seed: 42
+output_dir: "checkpoints/stage4_tihm_binary_elevated"
+
+train_sequences: "data/processed/tihm_binary/train_sequences.json"
+val_sequences: "data/processed/tihm_binary/val_sequences.json"
+test_sequences: "data/processed/tihm_binary/test_sequences.json"
+events_json: "data/processed/tihm_binary/events.json"
+
+num_epochs: 20
+batch_size: 512
+eval_batch_size: 1024
+num_workers: 0
+cache_dataset_in_memory: true
+pack_dataset_arrays: true
+packed_arrays_dir: "data/processed/tihm_binary/packed"
+lr: 1.0e-4
+weight_decay: 0.01
+max_grad_norm: 1.0
+hidden_dim: 256
+projection_dim: 256
+dropout: 0.2
+minority_target_fraction: 0.3
+early_stop_patience: 4
+use_wandb: false
+log_every: 10

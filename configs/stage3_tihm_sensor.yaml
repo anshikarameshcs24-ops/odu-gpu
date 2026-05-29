@@ -1,12 +1,14 @@
-run_name: "stage3_tihm_sensor_v1"
+run_name: "stage3_tihm_sensor_v3_focal_sampler"
 seed: 42
-output_dir: "checkpoints/stage3_tihm_sensor"
+output_dir: "checkpoints/stage3_tihm_sensor_focal_sampler"
 
 train_sequences: "data/processed/tihm/train_sequences.json"
 val_sequences: "data/processed/tihm/val_sequences.json"
+test_sequences: "data/processed/tihm/test_sequences.json"
 
 num_epochs: 20
-batch_size: 16
+batch_size: 64
+eval_batch_size: 256
 num_workers: 4
 lr: 1.0e-4
 weight_decay: 0.01
@@ -14,6 +16,11 @@ max_grad_norm: 1.0
 hidden_dim: 256
 projection_dim: 256
 dropout: 0.2
+focal_gamma: 2.0
+max_class_weight: 200.0
+normalize_class_weights: false
+minority_target_fraction: 0.3
+collapse_check_epoch: 4
+collapse_threshold: 0.95
 use_wandb: false
 log_every: 10
-

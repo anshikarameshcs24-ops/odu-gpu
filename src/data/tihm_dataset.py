@@ -181,13 +181,19 @@ def build_tihm_sequence_records(
     output_dir: str | Path,
     sequence_length: int = 30,
     stride: int = 10,
+    pre_agitation_minutes: int = 8,
+    imminent_minutes: int = 3,
     train_ratio: float = 0.7,
     val_ratio: float = 0.15,
 ) -> dict[str, list[dict[str, Any]]]:
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
-    frame = build_tihm_risk_frame(root_dir)
+    frame = build_tihm_risk_frame(
+        root_dir,
+        pre_agitation_minutes=pre_agitation_minutes,
+        imminent_minutes=imminent_minutes,
+    )
     feature_columns = [col for col in frame.columns if col not in {"patient_id", "minute", "agitation_risk", "agitation_event"}]
 
     patient_records: list[dict[str, Any]] = []
@@ -281,4 +287,3 @@ def save_sequence_splits(records: dict[str, Any], output_dir: str | Path) -> Non
             json.dump(records[split], handle, indent=2)
     with (output_path / "feature_columns.json").open("w", encoding="utf-8") as handle:
         json.dump(records["feature_columns"], handle, indent=2)
-
