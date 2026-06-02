@@ -7,20 +7,15 @@ from pathlib import Path
 from typing import Any
 
 import numpy as np
-import pandas as pd
 import torch
 from torch.utils.data import Dataset
 
-from src.data.tihm_dataset import (
-    _normalize_timestamp,
-    build_tihm_feature_frame,
-    build_tihm_risk_frame,
-    compute_trajectory_label,
-    load_tihm_tables,
-)
-
 
 def build_tihm_binary_frame(root_dir: str | Path, lead_minutes: int = 8) -> tuple[pd.DataFrame, list[dict[str, Any]]]:
+    import pandas as pd
+
+    from src.data.tihm_dataset import _normalize_timestamp, build_tihm_feature_frame, load_tihm_tables
+
     features = build_tihm_feature_frame(root_dir)
     labels = _normalize_timestamp(load_tihm_tables(root_dir)["labels"])
     agitation = labels[labels["type"].astype(str).str.lower() == "agitation"].copy()
@@ -62,6 +57,8 @@ def build_tihm_binary_sequence_records(
     train_ratio: float = 0.7,
     val_ratio: float = 0.15,
 ) -> dict[str, Any]:
+    from src.data.tihm_dataset import build_tihm_risk_frame, compute_trajectory_label
+
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
 
@@ -143,49 +140,51 @@ def build_tihm_binary_sequence_records(
 class TIHMBinarySequenceDataset(Dataset):
     def __init__(self, sequence_records: list[dict[str, Any]], cache_in_memory: bool = False):
         self.records = sequence_records
-        self.cache_in_memory = cache_in_memory
-        self._feature_cache: list[np.ndarray] | None = None
-        if cache_in_memory:
-            self._feature_cache = [
-                np.load(record["feature_path"]).astype(np.float32)
-                for record in self.records
-            ]
+        features = []
+        elevated = []
+        trajectory = []
+        lengths = []
+        for record in self.records:
+            array = np.load(record["feature_path"]).astype(np.float32)
+            features.append(torch.from_numpy(array))
+            elevated.append(torch.tensor(record["elevated_labels"], dtype=torch.float32))
+            trajectory.append(int(record["trajectory"]))
+            lengths.append(array.shape[0])
+        self.features = features
+        self.elevated = elevated
+        self.trajectory = torch.tensor(trajectory, dtype=torch.long)
+        self.lengths = torch.tensor(lengths, dtype=torch.long)
 
     def __len__(self) -> int:
         return len(self.records)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
-        record = self.records[idx]
-        if self._feature_cache is None:
-            features = np.load(record["feature_path"]).astype(np.float32)
-        else:
-            features = self._feature_cache[idx]
-        elevated = np.asarray(record["elevated_labels"], dtype=np.float32)
         return {
-            "features": torch.tensor(features, dtype=torch.float32),
-            "elevated_labels": torch.tensor(elevated, dtype=torch.float32),
-            "trajectory": torch.tensor(int(record["trajectory"]), dtype=torch.long),
-            "length": torch.tensor(features.shape[0], dtype=torch.long),
+            "features": self.features[idx],
+            "elevated_labels": self.elevated[idx],
+            "trajectory": self.trajectory[idx],
+            "length": self.lengths[idx],
         }
 
 
 class TIHMBinaryPackedSequenceDataset(Dataset):
     def __init__(self, sequence_records: list[dict[str, Any]], pack_path: str | Path):
         self.records = sequence_records
-        packed = np.load(pack_path)
-        self.features = packed["features"]
-        self.elevated = packed["elevated"]
-        self.trajectory = packed["trajectory"]
+        with np.load(pack_path) as packed:
+            self.features = torch.from_numpy(packed["features"].astype(np.float32))
+            self.elevated = torch.from_numpy(packed["elevated"].astype(np.float32))
+            self.trajectory = torch.from_numpy(packed["trajectory"].astype(np.int64))
+        self.lengths = torch.full((len(self.records),), self.features.shape[1], dtype=torch.long)
 
     def __len__(self) -> int:
         return len(self.records)
 
     def __getitem__(self, idx: int) -> dict[str, torch.Tensor]:
         return {
-            "features": torch.tensor(self.features[idx], dtype=torch.float32),
-            "elevated_labels": torch.tensor(self.elevated[idx], dtype=torch.float32),
-            "trajectory": torch.tensor(int(self.trajectory[idx]), dtype=torch.long),
-            "length": torch.tensor(self.features.shape[1], dtype=torch.long),
+            "features": self.features[idx],
+            "elevated_labels": self.elevated[idx],
+            "trajectory": self.trajectory[idx],
+            "length": self.lengths[idx],
         }
 
 

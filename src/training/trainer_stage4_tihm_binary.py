@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
+import subprocess
 import time
 from pathlib import Path
 from typing import Any
@@ -22,6 +24,7 @@ from torch.cuda.amp import GradScaler, autocast
 from torch.optim import AdamW
 from torch.utils.data import DataLoader, WeightedRandomSampler
 from transformers import get_cosine_schedule_with_warmup
+from tqdm.auto import tqdm
 
 from src.data.tihm_binary_dataset import (
     TIHMBinaryPackedSequenceDataset,
@@ -66,6 +69,49 @@ def _binary_counts(records: list[dict[str, Any]]) -> np.ndarray:
 
 def _trajectory_counts(records: list[dict[str, Any]]) -> np.ndarray:
     return np.bincount(np.asarray([int(record["trajectory"]) for record in records], dtype=np.int64), minlength=3)
+
+
+def _worker_count(config: dict) -> int:
+    requested = int(config.get("num_workers", 0))
+    cpu_count = os.cpu_count() or 1
+    return max(0, min(requested, cpu_count))
+
+
+def _loader_kwargs(config: dict, workers: int) -> dict[str, Any]:
+    kwargs: dict[str, Any] = {
+        "num_workers": workers,
+        "pin_memory": bool(config.get("pin_memory", torch.cuda.is_available())),
+    }
+    if workers > 0:
+        kwargs["persistent_workers"] = bool(config.get("persistent_workers", True))
+        kwargs["prefetch_factor"] = int(config.get("prefetch_factor", 4))
+    return kwargs
+
+
+def _gpu_metrics(device: torch.device) -> str:
+    if device.type != "cuda":
+        return "gpu=n/a"
+    allocated_mb = torch.cuda.memory_allocated(device) / (1024 * 1024)
+    reserved_mb = torch.cuda.memory_reserved(device) / (1024 * 1024)
+    metrics = f"gpu_mem_alloc={allocated_mb:.1f}MB gpu_mem_reserved={reserved_mb:.1f}MB"
+    try:
+        result = subprocess.run(
+            [
+                "nvidia-smi",
+                "--query-gpu=utilization.gpu,memory.used,power.draw",
+                "--format=csv,noheader,nounits",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=2,
+        )
+    except Exception:
+        return metrics
+    if result.returncode != 0 or not result.stdout.strip():
+        return metrics
+    util, memory_used, power_draw = [part.strip() for part in result.stdout.strip().splitlines()[0].split(",")[:3]]
+    return f"{metrics} gpu_util={util}% gpu_mem_used={memory_used}MB gpu_power={power_draw}W"
 
 
 def _build_sampler(records: list[dict[str, Any]], minority_target_fraction: float) -> WeightedRandomSampler:
@@ -147,43 +193,65 @@ def _packed_cache_ready(config: dict) -> bool:
 
 
 @torch.no_grad()
-def collect_predictions(model: torch.nn.Module, loader: DataLoader, device: torch.device) -> dict[str, np.ndarray]:
+def collect_predictions(
+    model: torch.nn.Module,
+    loader: DataLoader,
+    device: torch.device,
+    elevated_loss: torch.nn.Module | None = None,
+    trajectory_loss: torch.nn.Module | None = None,
+    include_timestep_meta: bool = False,
+    desc: str = "eval",
+    use_mixed_precision: bool = True,
+) -> dict[str, Any]:
     model.eval()
     y_true: list[np.ndarray] = []
     y_score: list[np.ndarray] = []
     traj_true: list[np.ndarray] = []
     traj_pred: list[np.ndarray] = []
     timestep_meta: list[dict[str, Any]] = []
+    total_loss = 0.0
+    total_samples = 0
 
     record_offset = 0
-    for batch in loader:
-        features = batch["features"].to(device)
-        labels = batch["elevated_labels"].to(device)
-        lengths = batch["lengths"].to(device)
-        trajectory = batch["trajectory"].to(device)
-        risk_logits, traj_logits = model(features, lengths)
-        risk_logits = risk_logits.squeeze(-1)
+    progress = tqdm(loader, desc=desc, dynamic_ncols=True, leave=False)
+    for batch in progress:
+        features = batch["features"].to(device, non_blocking=True)
+        labels = batch["elevated_labels"].to(device, non_blocking=True)
+        lengths = batch["lengths"].to(device, non_blocking=True)
+        trajectory = batch["trajectory"].to(device, non_blocking=True)
         mask = torch.arange(features.size(1), device=device).unsqueeze(0) < lengths.unsqueeze(1)
+
+        with autocast(enabled=use_mixed_precision and device.type == "cuda"):
+            risk_logits, traj_logits = model(features, lengths)
+            risk_logits = risk_logits.squeeze(-1)
+            if elevated_loss is not None and trajectory_loss is not None:
+                loss_elevated = elevated_loss(risk_logits[mask], labels[mask])
+                loss_trajectory = trajectory_loss(traj_logits, trajectory)
+                loss = loss_elevated + 0.3 * loss_trajectory
+                batch_samples = int(features.size(0))
+                total_loss += float(loss.item()) * batch_samples
+                total_samples += batch_samples
 
         y_true.append(labels[mask].cpu().numpy())
         y_score.append(torch.sigmoid(risk_logits)[mask].cpu().numpy())
         traj_true.append(trajectory.cpu().numpy())
         traj_pred.append(traj_logits.argmax(dim=-1).cpu().numpy())
 
-        for batch_index in range(features.size(0)):
-            seq_len = int(lengths[batch_index].item())
-            dataset_record = loader.dataset.records[record_offset + batch_index]
-            scores = torch.sigmoid(risk_logits[batch_index, :seq_len]).cpu().numpy()
-            labels_np = labels[batch_index, :seq_len].cpu().numpy()
-            for timestep in range(seq_len):
-                timestep_meta.append(
-                    {
-                        "patient_id": dataset_record["patient_id"],
-                        "timestamp": dataset_record["timestamps"][timestep],
-                        "score": float(scores[timestep]),
-                        "label": int(labels_np[timestep]),
-                    }
-                )
+        if include_timestep_meta:
+            for batch_index in range(features.size(0)):
+                seq_len = int(lengths[batch_index].item())
+                dataset_record = loader.dataset.records[record_offset + batch_index]
+                scores = torch.sigmoid(risk_logits[batch_index, :seq_len]).cpu().numpy()
+                labels_np = labels[batch_index, :seq_len].cpu().numpy()
+                for timestep in range(seq_len):
+                    timestep_meta.append(
+                        {
+                            "patient_id": dataset_record["patient_id"],
+                            "timestamp": dataset_record["timestamps"][timestep],
+                            "score": float(scores[timestep]),
+                            "label": int(labels_np[timestep]),
+                        }
+                    )
         record_offset += features.size(0)
 
     return {
@@ -192,6 +260,7 @@ def collect_predictions(model: torch.nn.Module, loader: DataLoader, device: torc
         "trajectory_true": np.concatenate(traj_true) if traj_true else np.zeros((0,), dtype=int),
         "trajectory_pred": np.concatenate(traj_pred) if traj_pred else np.zeros((0,), dtype=int),
         "timestep_meta": timestep_meta,
+        "loss": total_loss / max(total_samples, 1) if total_samples else None,
     }
 
 
@@ -284,16 +353,39 @@ def train_stage4(config: dict) -> None:
     _maybe_init_wandb(config)
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    if device.type == "cuda":
+        torch.backends.cudnn.benchmark = bool(config.get("cudnn_benchmark", True))
     train_records = _load_records(config["train_sequences"])
     val_records = _load_records(config["val_sequences"])
     test_records = _load_records(config["test_sequences"])
     events = _load_records(config["events_json"])
+    workers = _worker_count(config)
+    train_batch_size = int(config["batch_size"])
+    eval_batch_size = int(config.get("eval_batch_size", config["batch_size"]))
+    num_epochs = int(config["num_epochs"])
+    eval_every_n_epochs = max(int(config.get("eval_every_n_epochs", 2)), 1)
+    use_mixed_precision = bool(config.get("use_mixed_precision", True))
+    loader_kwargs = _loader_kwargs(config, workers)
     print(
         f"[data] train={len(train_records)} windows | val={len(val_records)} | "
         f"test={len(test_records)} | packed={'yes' if _packed_cache_ready(config) else 'no'} | "
-        f"workers={int(config['num_workers'])}",
+        f"workers={workers}",
         flush=True,
     )
+    train_steps = max((len(train_records) + train_batch_size - 1) // train_batch_size, 1)
+    eval_steps = max((len(val_records) + eval_batch_size - 1) // eval_batch_size, 1)
+    print(
+        "[startup] "
+        f"device={device} effective_batch_size={train_batch_size} eval_batch_size={eval_batch_size} "
+        f"num_workers={workers} pin_memory={loader_kwargs['pin_memory']} "
+        f"persistent_workers={loader_kwargs.get('persistent_workers', False)} "
+        f"prefetch_factor={loader_kwargs.get('prefetch_factor', 'n/a')} "
+        f"mixed_precision={use_mixed_precision and device.type == 'cuda'} "
+        f"epochs={num_epochs} eval_every_n_epochs={eval_every_n_epochs} "
+        f"steps_per_epoch={train_steps} val_steps={eval_steps}",
+        flush=True,
+    )
+    print(f"[startup] {_gpu_metrics(device)}", flush=True)
 
     feature_dim = int(train_records[0]["feature_dim"])
     binary_counts = _binary_counts(train_records)
@@ -306,24 +398,24 @@ def train_stage4(config: dict) -> None:
 
     train_loader = DataLoader(
         _make_dataset(train_records, "train", config),
-        batch_size=int(config["batch_size"]),
+        batch_size=train_batch_size,
         sampler=_build_sampler(train_records, float(config.get("minority_target_fraction", 0.3))),
-        num_workers=int(config["num_workers"]),
         collate_fn=collate_tihm_binary_sequences,
+        **loader_kwargs,
     )
     val_loader = DataLoader(
         _make_dataset(val_records, "val", config),
-        batch_size=int(config.get("eval_batch_size", config["batch_size"])),
+        batch_size=eval_batch_size,
         shuffle=False,
-        num_workers=int(config["num_workers"]),
         collate_fn=collate_tihm_binary_sequences,
+        **loader_kwargs,
     )
     test_loader = DataLoader(
         _make_dataset(test_records, "test", config),
-        batch_size=int(config.get("eval_batch_size", config["batch_size"])),
+        batch_size=eval_batch_size,
         shuffle=False,
-        num_workers=int(config["num_workers"]),
         collate_fn=collate_tihm_binary_sequences,
+        **loader_kwargs,
     )
 
     model = TIHMBinaryTemporalModel(
@@ -335,23 +427,28 @@ def train_stage4(config: dict) -> None:
     elevated_loss = torch.nn.BCEWithLogitsLoss(pos_weight=pos_weight)
     trajectory_loss = torch.nn.CrossEntropyLoss()
     optimizer = AdamW(model.parameters(), lr=float(config["lr"]), weight_decay=float(config["weight_decay"]))
-    total_steps = max(len(train_loader) * int(config["num_epochs"]), 1)
+    total_steps = max(len(train_loader) * num_epochs, 1)
     scheduler = get_cosine_schedule_with_warmup(optimizer, max(int(total_steps * 0.05), 1), total_steps)
-    scaler = GradScaler(enabled=device.type == "cuda")
-    autocast_enabled = device.type == "cuda"
+    scaler = GradScaler(enabled=use_mixed_precision and device.type == "cuda")
+    autocast_enabled = use_mixed_precision and device.type == "cuda"
 
     output_dir = Path(config["output_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
     best_auprc = -1.0
+    best_epoch = -1
     stale_epochs = 0
 
-    for epoch in range(int(config["num_epochs"])):
+    for epoch in range(num_epochs):
+        epoch_start = time.perf_counter()
         model.train()
-        for step, batch in enumerate(train_loader):
-            features = batch["features"].to(device)
-            elevated = batch["elevated_labels"].to(device)
-            trajectory = batch["trajectory"].to(device)
-            lengths = batch["lengths"].to(device)
+        train_loss_total = 0.0
+        train_samples = 0
+        progress = tqdm(train_loader, desc=f"epoch {epoch + 1}/{num_epochs} train", dynamic_ncols=True)
+        for step, batch in enumerate(progress):
+            features = batch["features"].to(device, non_blocking=True)
+            elevated = batch["elevated_labels"].to(device, non_blocking=True)
+            trajectory = batch["trajectory"].to(device, non_blocking=True)
+            lengths = batch["lengths"].to(device, non_blocking=True)
             mask = torch.arange(features.size(1), device=device).unsqueeze(0) < lengths.unsqueeze(1)
 
             optimizer.zero_grad(set_to_none=True)
@@ -369,7 +466,13 @@ def train_stage4(config: dict) -> None:
             scaler.update()
             scheduler.step()
 
-            if step % int(config.get("log_every", 10)) == 0:
+            batch_samples = int(features.size(0))
+            train_loss_total += float(loss.item()) * batch_samples
+            train_samples += batch_samples
+            running_loss = train_loss_total / max(train_samples, 1)
+            progress.set_postfix(loss=f"{running_loss:.4f}")
+
+            if step % int(config.get("log_every", 100)) == 0:
                 _maybe_log(
                     {
                         "train/loss": loss.item(),
@@ -378,34 +481,94 @@ def train_stage4(config: dict) -> None:
                         "epoch": epoch,
                     }
                 )
+            if step and step % int(config.get("progress_every_batches", 100)) == 0:
+                elapsed = time.perf_counter() - epoch_start
+                samples_per_sec = train_samples / max(elapsed, 1e-6)
+                print(
+                    f"epoch={epoch:02d} batch={step}/{len(train_loader)} "
+                    f"train/loss={running_loss:.6f} samples_per_sec={samples_per_sec:.1f} "
+                    f"{_gpu_metrics(device)}",
+                    flush=True,
+                )
 
-        val_predictions = collect_predictions(model, val_loader, device)
-        val_auprc = average_precision_score(val_predictions["y_true"], val_predictions["y_score"])
-        val_threshold = _threshold_for_min_sensitivity(val_predictions["y_true"], val_predictions["y_score"])
-        val_summary = _binary_summary(val_predictions["y_true"], val_predictions["y_score"], val_threshold)
+        epoch_duration = time.perf_counter() - epoch_start
+        train_loss = train_loss_total / max(train_samples, 1)
+        samples_per_sec = train_samples / max(epoch_duration, 1e-6)
+        should_eval = ((epoch + 1) % eval_every_n_epochs == 0) or epoch == num_epochs - 1
+        val_loss = None
+        val_auprc = None
+        if should_eval:
+            val_predictions = collect_predictions(
+                model,
+                val_loader,
+                device,
+                elevated_loss=elevated_loss,
+                trajectory_loss=trajectory_loss,
+                include_timestep_meta=False,
+                desc=f"epoch {epoch + 1}/{num_epochs} val",
+                use_mixed_precision=autocast_enabled,
+            )
+            val_loss = val_predictions["loss"]
+            val_auprc = average_precision_score(val_predictions["y_true"], val_predictions["y_score"])
+            val_threshold = _threshold_for_min_sensitivity(val_predictions["y_true"], val_predictions["y_score"])
+            val_summary = _binary_summary(val_predictions["y_true"], val_predictions["y_score"], val_threshold)
+            print(
+                f"epoch={epoch:02d} val/auprc={val_auprc:.6f} "
+                f"threshold={val_threshold:.4f} pred_counts={val_summary['pred_counts']}",
+                flush=True,
+            )
+            _maybe_log({"val/loss": val_loss, "val/auprc": val_auprc, "val/threshold": val_threshold, "epoch": epoch})
         print(
-            f"epoch={epoch:02d} val/auprc={val_auprc:.6f} "
-            f"threshold={val_threshold:.4f} pred_counts={val_summary['pred_counts']}",
+            f"epoch={epoch:02d} train/loss={train_loss:.6f} "
+            f"val/loss={val_loss if val_loss is not None else 'skipped'} "
+            f"duration_sec={epoch_duration:.1f} samples_per_sec={samples_per_sec:.1f} "
+            f"{_gpu_metrics(device)}",
             flush=True,
         )
-        _maybe_log({"val/auprc": val_auprc, "val/threshold": val_threshold, "epoch": epoch})
-
         torch.save(model.state_dict(), output_dir / f"epoch_{epoch:02d}.pt")
+        if not should_eval:
+            continue
+
+        assert val_auprc is not None
         if val_auprc > best_auprc:
-            best_auprc = val_auprc
+            best_auprc = float(val_auprc)
+            best_epoch = epoch
             stale_epochs = 0
             torch.save(model.state_dict(), output_dir / "best_model.pt")
         else:
             stale_epochs += 1
-            if stale_epochs >= int(config.get("early_stop_patience", 4)):
+            if stale_epochs >= int(config.get("early_stop_patience", 2)):
                 print(f"early_stop=val_auprc_patience epoch={epoch}", flush=True)
                 break
 
     best_path = output_dir / "best_model.pt"
+    if not best_path.exists():
+        fallback_path = output_dir / f"epoch_{epoch:02d}.pt"
+        torch.save(model.state_dict(), best_path)
+        print(f"[final] No validation improvement checkpoint existed; copied current model from {fallback_path}.", flush=True)
+    print(f"[final] best_epoch={best_epoch} best_val_auprc={best_auprc:.6f}", flush=True)
     model.load_state_dict(torch.load(best_path, map_location=device))
-    val_predictions = collect_predictions(model, val_loader, device)
+    val_predictions = collect_predictions(
+        model,
+        val_loader,
+        device,
+        elevated_loss=elevated_loss,
+        trajectory_loss=trajectory_loss,
+        include_timestep_meta=False,
+        desc="final val",
+        use_mixed_precision=autocast_enabled,
+    )
     threshold = _threshold_for_min_sensitivity(val_predictions["y_true"], val_predictions["y_score"])
-    test_predictions = collect_predictions(model, test_loader, device)
+    test_predictions = collect_predictions(
+        model,
+        test_loader,
+        device,
+        elevated_loss=elevated_loss,
+        trajectory_loss=trajectory_loss,
+        include_timestep_meta=True,
+        desc="final test",
+        use_mixed_precision=autocast_enabled,
+    )
     test_summary = _binary_summary(test_predictions["y_true"], test_predictions["y_score"], threshold)
     final_results = {
         "checkpoint": str(best_path),
