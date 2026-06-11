@@ -52,9 +52,9 @@ class Stage1SingleModalityModel(nn.Module):
 
     def forward(self, pixel_values: torch.Tensor, audio_values: torch.Tensor):
         if self.modality == "vision":
-            embedding = self.encoder(pixel_values)
+            embedding, _ = self.encoder(pixel_values)
         else:
-            embedding = self.encoder(audio_values)
+            embedding, _ = self.encoder(audio_values)
         return self.cmai_head(embedding), self.risk_head(embedding)
 
 
@@ -188,4 +188,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

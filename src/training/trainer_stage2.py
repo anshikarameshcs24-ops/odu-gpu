@@ -63,6 +63,38 @@ def _build_model(config: dict, device: torch.device) -> torch.nn.Module:
     return model
 
 
+def _base_model(model: torch.nn.Module) -> torch.nn.Module:
+    return model.module if hasattr(model, "module") else model
+
+
+def _build_optimizer(model: torch.nn.Module, config: dict) -> AdamW:
+    base_model = _base_model(model)
+    vision_backbone_params = []
+    audio_backbone_params = []
+    fusion_params = []
+    head_params = []
+
+    for name, parameter in base_model.named_parameters():
+        if "vision_enc.backbone" in name:
+            vision_backbone_params.append(parameter)
+        elif "audio_enc.backbone" in name:
+            audio_backbone_params.append(parameter)
+        elif "fusion" in name:
+            fusion_params.append(parameter)
+        else:
+            head_params.append(parameter)
+
+    return AdamW(
+        [
+            {"params": vision_backbone_params, "lr": float(config["vision_backbone_lr"])},
+            {"params": audio_backbone_params, "lr": float(config["audio_backbone_lr"])},
+            {"params": fusion_params, "lr": float(config["fusion_lr"])},
+            {"params": head_params, "lr": float(config["head_lr"])},
+        ],
+        weight_decay=float(config["weight_decay"]),
+    )
+
+
 def _compute_risk_weights(train_df: pd.DataFrame, device: torch.device) -> torch.Tensor:
     counts = train_df["agitation_risk"].value_counts().reindex(range(4), fill_value=1)
     weights = (1.0 / counts.values).astype(np.float32)
@@ -127,34 +159,11 @@ def train(config: dict) -> None:
     model = _build_model(config, device)
     criterion = CombinedCMAILoss(risk_class_weights=_compute_risk_weights(train_df, device))
 
-    vision_backbone_params = []
-    audio_backbone_params = []
-    fusion_params = []
-    head_params = []
-    for name, parameter in model.named_parameters():
-        if not parameter.requires_grad:
-            continue
-        if "vision_enc.backbone" in name:
-            vision_backbone_params.append(parameter)
-        elif "audio_enc.backbone" in name:
-            audio_backbone_params.append(parameter)
-        elif "fusion" in name:
-            fusion_params.append(parameter)
-        else:
-            head_params.append(parameter)
-
-    optimizer = AdamW(
-        [
-            {"params": vision_backbone_params, "lr": float(config["vision_backbone_lr"])},
-            {"params": audio_backbone_params, "lr": float(config["audio_backbone_lr"])},
-            {"params": fusion_params, "lr": float(config["fusion_lr"])},
-            {"params": head_params, "lr": float(config["head_lr"])},
-        ],
-        weight_decay=float(config["weight_decay"]),
-    )
+    optimizer = _build_optimizer(model, config)
 
     accumulation_steps = int(config.get("accumulation_steps", 1))
-    total_steps = max((len(train_loader) * int(config["num_epochs"])) // accumulation_steps, 1)
+    steps_per_epoch = max((len(train_loader) + accumulation_steps - 1) // accumulation_steps, 1)
+    total_steps = max(steps_per_epoch * int(config["num_epochs"]), 1)
     scheduler = get_cosine_schedule_with_warmup(optimizer, max(int(total_steps * 0.05), 1), total_steps)
     scaler = GradScaler(enabled=device.type == "cuda")
     autocast_enabled = device.type == "cuda"
@@ -167,12 +176,12 @@ def train(config: dict) -> None:
 
     for epoch in range(int(config["num_epochs"])):
         if epoch == int(config.get("unfreeze_epoch", 3)) and not unfreeze_done:
-            base_model = model.module if hasattr(model, "module") else model
-            base_model.vision_enc.unfreeze_all()
+            _base_model(model).vision_enc.unfreeze_all()
             unfreeze_done = True
 
         model.train()
         optimizer.zero_grad(set_to_none=True)
+        stepped_this_epoch = 0
 
         for step, batch in enumerate(train_loader):
             pixel_values = batch["pixel_values"].to(device, non_blocking=True)
@@ -194,6 +203,7 @@ def train(config: dict) -> None:
                 scaler.update()
                 optimizer.zero_grad(set_to_none=True)
                 scheduler.step()
+                stepped_this_epoch += 1
 
             if step % int(config.get("log_every", 10)) == 0:
                 _maybe_log(
@@ -209,12 +219,20 @@ def train(config: dict) -> None:
                     }
                 )
 
+        if len(train_loader) % accumulation_steps != 0:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), float(config["max_grad_norm"]))
+            scaler.step(optimizer)
+            scaler.update()
+            optimizer.zero_grad(set_to_none=True)
+            scheduler.step()
+            stepped_this_epoch += 1
+
         metrics = evaluate(model, val_loader, criterion, device)
-        _maybe_log({"epoch": epoch, **{f"val/{key}": value for key, value in metrics.items()}})
+        _maybe_log({"epoch": epoch, "train/optimizer_steps": stepped_this_epoch, **{f"val/{key}": value for key, value in metrics.items()}})
         if metrics["cmai_f1_micro"] > best_f1:
             best_f1 = metrics["cmai_f1_micro"]
-            base_model = model.module if hasattr(model, "module") else model
-            torch.save(base_model.state_dict(), best_dir / "model.pt")
+            torch.save(_base_model(model).state_dict(), best_dir / "model.pt")
 
     _maybe_finish_wandb()
 
