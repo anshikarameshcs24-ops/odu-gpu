@@ -265,20 +265,54 @@ def collect_predictions(
 
 
 def _threshold_for_min_sensitivity(y_true: np.ndarray, y_score: np.ndarray, min_sensitivity: float = 0.5) -> float:
+    return _select_operating_threshold(
+        y_true,
+        y_score,
+        min_sensitivity=min_sensitivity,
+    )[0]
+
+
+def _select_operating_threshold(
+    y_true: np.ndarray,
+    y_score: np.ndarray,
+    min_sensitivity: float = 0.5,
+    min_specificity: float = 0.0,
+) -> tuple[float, str]:
     precision, recall, thresholds = precision_recall_curve(y_true, y_score)
-    candidates = []
+    constrained_candidates = []
+    sensitivity_candidates = []
     for idx, threshold in enumerate(thresholds):
         sensitivity = recall[idx]
         y_pred = (y_score >= threshold).astype(int)
         tn, fp, fn, tp = confusion_matrix(y_true, y_pred, labels=[0, 1]).ravel()
         specificity = tn / max(tn + fp, 1)
         f1 = f1_score(y_true, y_pred, zero_division=0)
+        precision_at_threshold = tp / max(tp + fp, 1)
         if sensitivity >= min_sensitivity:
-            candidates.append((f1, specificity, threshold))
-    if not candidates:
-        return 0.5
-    candidates.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    return float(candidates[0][2])
+            sensitivity_candidates.append((f1, specificity, precision_at_threshold, threshold))
+            if specificity >= min_specificity:
+                constrained_candidates.append((f1, specificity, precision_at_threshold, threshold))
+    if constrained_candidates:
+        constrained_candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]), reverse=True)
+        return float(constrained_candidates[0][3]), (
+            f"validation threshold maximizing F1 among thresholds with "
+            f"sensitivity >= {min_sensitivity:.2f} and specificity >= {min_specificity:.2f}"
+        )
+    if sensitivity_candidates:
+        sensitivity_candidates.sort(key=lambda item: (item[0], item[1], item[2], item[3]), reverse=True)
+        return float(sensitivity_candidates[0][3]), (
+            f"validation threshold maximizing F1 among thresholds with "
+            f"sensitivity >= {min_sensitivity:.2f}; specificity floor unavailable"
+        )
+    return 0.5, "default threshold 0.50; no validation threshold satisfied sensitivity floor"
+
+
+def _compute_pos_weight(binary_counts: np.ndarray, device: torch.device, config: dict) -> tuple[torch.Tensor, float]:
+    raw_pos_weight = float(binary_counts[0] / max(binary_counts[1], 1))
+    max_pos_weight = float(config.get("max_pos_weight", raw_pos_weight))
+    pos_weight_value = min(raw_pos_weight, max_pos_weight)
+    pos_weight = torch.tensor([pos_weight_value], dtype=torch.float32, device=device)
+    return pos_weight, raw_pos_weight
 
 
 def _binary_summary(y_true: np.ndarray, y_score: np.ndarray, threshold: float) -> dict[str, Any]:
@@ -390,9 +424,12 @@ def train_stage4(config: dict) -> None:
     feature_dim = int(train_records[0]["feature_dim"])
     binary_counts = _binary_counts(train_records)
     trajectory_counts = _trajectory_counts(train_records)
-    pos_weight = torch.tensor([binary_counts[0] / max(binary_counts[1], 1)], dtype=torch.float32, device=device)
+    pos_weight, raw_pos_weight = _compute_pos_weight(binary_counts, device, config)
+    min_sensitivity = float(config.get("threshold_min_sensitivity", 0.5))
+    min_specificity = float(config.get("threshold_min_specificity", 0.8))
 
     print(f"train/binary_counts={{'low': {int(binary_counts[0])}, 'elevated': {int(binary_counts[1])}}}")
+    print(f"train/pos_weight_raw={raw_pos_weight:.4f}")
     print(f"train/pos_weight={float(pos_weight.item()):.4f}")
     print(f"train/trajectory_counts={trajectory_counts.tolist()}")
 
@@ -510,14 +547,28 @@ def train_stage4(config: dict) -> None:
             )
             val_loss = val_predictions["loss"]
             val_auprc = average_precision_score(val_predictions["y_true"], val_predictions["y_score"])
-            val_threshold = _threshold_for_min_sensitivity(val_predictions["y_true"], val_predictions["y_score"])
+            val_threshold, threshold_source = _select_operating_threshold(
+                val_predictions["y_true"],
+                val_predictions["y_score"],
+                min_sensitivity=min_sensitivity,
+                min_specificity=min_specificity,
+            )
             val_summary = _binary_summary(val_predictions["y_true"], val_predictions["y_score"], val_threshold)
             print(
                 f"epoch={epoch:02d} val/auprc={val_auprc:.6f} "
-                f"threshold={val_threshold:.4f} pred_counts={val_summary['pred_counts']}",
+                f"threshold={val_threshold:.4f} specificity={val_summary['specificity']:.4f} "
+                f"pred_counts={val_summary['pred_counts']}",
                 flush=True,
             )
-            _maybe_log({"val/loss": val_loss, "val/auprc": val_auprc, "val/threshold": val_threshold, "epoch": epoch})
+            _maybe_log(
+                {
+                    "val/loss": val_loss,
+                    "val/auprc": val_auprc,
+                    "val/threshold": val_threshold,
+                    "val/specificity": val_summary["specificity"],
+                    "epoch": epoch,
+                }
+            )
         print(
             f"epoch={epoch:02d} train/loss={train_loss:.6f} "
             f"val/loss={val_loss if val_loss is not None else 'skipped'} "
@@ -558,7 +609,12 @@ def train_stage4(config: dict) -> None:
         desc="final val",
         use_mixed_precision=autocast_enabled,
     )
-    threshold = _threshold_for_min_sensitivity(val_predictions["y_true"], val_predictions["y_score"])
+    threshold, threshold_source = _select_operating_threshold(
+        val_predictions["y_true"],
+        val_predictions["y_score"],
+        min_sensitivity=min_sensitivity,
+        min_specificity=min_specificity,
+    )
     test_predictions = collect_predictions(
         model,
         test_loader,
@@ -572,7 +628,7 @@ def train_stage4(config: dict) -> None:
     test_summary = _binary_summary(test_predictions["y_true"], test_predictions["y_score"], threshold)
     final_results = {
         "checkpoint": str(best_path),
-        "threshold_source": "validation threshold maximizing F1 among thresholds with sensitivity >= 0.50",
+        "threshold_source": threshold_source,
         "operating_threshold": threshold,
         "validation": _binary_summary(val_predictions["y_true"], val_predictions["y_score"], threshold),
         "test": test_summary,
