@@ -1,0 +1,251 @@
+{
+  "checkpoint": "checkpoints\\stage4_tihm_binary_elevated\\best_model.pt",
+  "threshold_source": "validation threshold maximizing F1 among thresholds with sensitivity >= 0.50 and specificity >= 0.80",
+  "operating_threshold": 0.65576171875,
+  "validation": {
+    "threshold": 0.65576171875,
+    "auprc": 0.0007608616686231469,
+    "auroc": 0.7871499455586112,
+    "sensitivity": 0.5,
+    "specificity": 0.8338613724123027,
+    "confusion_matrix": [
+      [
+        409004,
+        81490
+      ],
+      [
+        63,
+        63
+      ]
+    ],
+    "true_counts": [
+      490494,
+      126
+    ],
+    "pred_counts": [
+      409067,
+      81553
+    ],
+    "classification_report": {
+      "low": {
+        "precision": 0.9998459909990295,
+        "recall": 0.8338613724123027,
+        "f1-score": 0.9093413342730511,
+        "support": 490494.0
+      },
+      "elevated": {
+        "precision": 0.0007725037705541181,
+        "recall": 0.5,
+        "f1-score": 0.0015426241751245729,
+        "support": 126.0
+      },
+      "accuracy": 0.8337756308344544,
+      "macro avg": {
+        "precision": 0.5003092473847918,
+        "recall": 0.6669306862061514,
+        "f1-score": 0.4554419792240878,
+        "support": 490620.0
+      },
+      "weighted avg": {
+        "precision": 0.9995894110402206,
+        "recall": 0.8337756308344544,
+        "f1-score": 0.9091081953111817,
+        "support": 490620.0
+      }
+    }
+  },
+  "test": {
+    "threshold": 0.65576171875,
+    "auprc": 0.0014494590142947819,
+    "auroc": 0.8273452003045004,
+    "sensitivity": 0.5679012345679012,
+    "specificity": 0.8147264728307626,
+    "confusion_matrix": [
+      [
+        399638,
+        90880
+      ],
+      [
+        70,
+        92
+      ]
+    ],
+    "true_counts": [
+      490518,
+      162
+    ],
+    "pred_counts": [
+      399708,
+      90972
+    ],
+    "classification_report": {
+      "low": {
+        "precision": 0.9998248721566744,
+        "recall": 0.8147264728307626,
+        "f1-score": 0.8978349318038341,
+        "support": 490518.0
+      },
+      "elevated": {
+        "precision": 0.0010113001802752495,
+        "recall": 0.5679012345679012,
+        "f1-score": 0.002019004981675335,
+        "support": 162.0
+      },
+      "accuracy": 0.8146449824733023,
+      "macro avg": {
+        "precision": 0.5004180861684748,
+        "recall": 0.691313853699332,
+        "f1-score": 0.4499269683927547,
+        "support": 490680.0
+      },
+      "weighted avg": {
+        "precision": 0.9994951097888172,
+        "recall": 0.8146449824733023,
+        "f1-score": 0.8975391745279208,
+        "support": 490680.0
+      }
+    }
+  },
+  "trajectory_test": {
+    "true_counts": [
+      16315,
+      17,
+      24
+    ],
+    "pred_counts": [
+      16356,
+      0,
+      0
+    ],
+    "macro_f1": 0.33291502147674285
+  },
+  "event_level": {
+    "event_recall": 0.75,
+    "detected_events": 9,
+    "evaluable_events": 12,
+    "examples": [
+      {
+        "patient_id": "ec812",
+        "event_minute": "2019-05-06 12:00:00",
+        "test_lead_minutes_present": [
+          "2019-05-06 11:52:00",
+          "2019-05-06 11:54:00",
+          "2019-05-06 11:56:00",
+          "2019-05-06 11:57:00",
+          "2019-05-06 11:59:00"
+        ],
+        "max_lead_score": 0.939453125,
+        "detected": true
+      },
+      {
+        "patient_id": "ec812",
+        "event_minute": "2019-05-11 12:01:00",
+        "test_lead_minutes_present": [
+          "2019-05-11 11:54:00",
+          "2019-05-11 11:55:00",
+          "2019-05-11 11:56:00",
+          "2019-05-11 11:58:00",
+          "2019-05-11 11:59:00",
+          "2019-05-11 12:00:00"
+        ],
+        "max_lead_score": 0.9658203125,
+        "detected": true
+      },
+      {
+        "patient_id": "e4959",
+        "event_minute": "2019-05-16 12:01:00",
+        "test_lead_minutes_present": [
+          "2019-05-16 11:55:00",
+          "2019-05-16 12:00:00"
+        ],
+        "max_lead_score": 0.83544921875,
+        "detected": true
+      },
+      {
+        "patient_id": "e8a78",
+        "event_minute": "2019-05-17 12:01:00",
+        "test_lead_minutes_present": [
+          "2019-05-17 11:53:00",
+          "2019-05-17 11:55:00",
+          "2019-05-17 11:57:00",
+          "2019-05-17 11:59:00",
+          "2019-05-17 12:00:00"
+        ],
+        "max_lead_score": 0.84765625,
+        "detected": true
+      },
+      {
+        "patient_id": "eca1f",
+        "event_minute": "2019-05-23 12:01:00",
+        "test_lead_minutes_present": [
+          "2019-05-23 11:55:00",
+          "2019-05-23 11:56:00",
+          "2019-05-23 11:58:00",
+          "2019-05-23 11:59:00",
+          "2019-05-23 12:00:00"
+        ],
+        "max_lead_score": 0.82763671875,
+        "detected": true
+      },
+      {
+        "patient_id": "e8a78",
+        "event_minute": "2019-05-23 12:01:00",
+        "test_lead_minutes_present": [
+          "2019-05-23 11:59:00"
+        ],
+        "max_lead_score": 0.89013671875,
+        "detected": true
+      },
+      {
+        "patient_id": "e4959",
+        "event_minute": "2019-05-27 12:02:00",
+        "test_lead_minutes_present": [
+          "2019-05-27 11:57:00",
+          "2019-05-27 11:58:00",
+          "2019-05-27 11:59:00",
+          "2019-05-27 12:00:00",
+          "2019-05-27 12:01:00"
+        ],
+        "max_lead_score": 0.64697265625,
+        "detected": false
+      },
+      {
+        "patient_id": "e8a78",
+        "event_minute": "2019-05-28 12:01:00",
+        "test_lead_minutes_present": [
+          "2019-05-28 11:53:00",
+          "2019-05-28 11:56:00",
+          "2019-05-28 11:59:00"
+        ],
+        "max_lead_score": 0.9453125,
+        "detected": true
+      },
+      {
+        "patient_id": "e87bd",
+        "event_minute": "2019-06-03 12:01:00",
+        "test_lead_minutes_present": [
+          "2019-06-03 11:54:00",
+          "2019-06-03 11:55:00",
+          "2019-06-03 11:56:00",
+          "2019-06-03 11:58:00"
+        ],
+        "max_lead_score": 0.428466796875,
+        "detected": false
+      },
+      {
+        "patient_id": "e4959",
+        "event_minute": "2019-06-07 12:02:00",
+        "test_lead_minutes_present": [
+          "2019-06-07 11:54:00",
+          "2019-06-07 11:57:00",
+          "2019-06-07 11:58:00",
+          "2019-06-07 11:59:00",
+          "2019-06-07 12:00:00",
+          "2019-06-07 12:01:00"
+        ],
+        "max_lead_score": 0.8017578125,
+        "detected": true
+      }
+    ]
+  }
+}

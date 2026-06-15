@@ -108,6 +108,26 @@ python -m src.training.trainer_stage4_tihm_binary --config configs/stage4_tihm_b
 
 This stage labels the minutes leading into agitation events as `elevated` and trains a binary temporal detector plus the trajectory head for risk grading.
 
+### Stage 4 Findings
+
+The tuned Stage 4 configuration now caps `pos_weight`, reduces positive oversampling, and selects the operating threshold with both sensitivity and specificity constraints. The committed evaluation artifact is at `results/stage4_tihm_binary_elevated_eval_results.json`.
+
+Observed metrics from the tuned TIHM binary run:
+
+- validation threshold source: sensitivity `>= 0.50` and specificity `>= 0.80`
+- operating threshold: `0.65576171875`
+- test AUROC: `0.8273`
+- test AUPRC: `0.001449`
+- test sensitivity: `0.5679`
+- test specificity: `0.8147`
+- event recall: `9/12 = 0.75`
+
+Interpretation:
+
+- this operating point is substantially less false-positive-heavy than the earlier ultra-sensitive configuration
+- the model still has very low minute-level positive precision because elevated windows are extremely rare
+- the checkpoint is better suited for early-warning screening than for high-precision minute-by-minute classification
+
 ## Using DAVE
 
 Build a DAVE manifest for encoder evaluation or audio-video warm-up:
